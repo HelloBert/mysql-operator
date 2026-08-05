@@ -1,0 +1,15 @@
+apiVersion: myapp.myapp.io/v1
+kind: MySQLCluster
+metadata:
+  name: mysql
+  namespace: default
+spec:
+  replicas: 3
+  image: registry.cn-hangzhou.aliyuncs.com/lpx03/mysql:8.0
+  ImagePullPolicy: IfNotPresent
+  StorageClassName: local-path 
+  storageSize: 10Gi
+  port: 3306
+  env:
+    MYSQL_ROOT_PASSWORD: "Ab123456"
+  

@@ -1,0 +1,52 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - patch
+- apiGroups:
+  - myapp.myapp.io
+  resources:
+  - mysqlclusters
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - myapp.myapp.io
+  resources:
+  - mysqlclusters/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - myapp.myapp.io
+  resources:
+  - mysqlclusters/status
+  verbs:
+  - get
+  - patch
+  - update
