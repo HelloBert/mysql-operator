@@ -185,11 +185,12 @@ func (r *MySQLClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	cmName := cluster.Name + "-mycnf"
 
 	mycnfContent := `[mysqld]
-server-id=1
 gtid_mode=ON
 enforce_gtid_consistency=ON
 binlog_format=ROW
-log_bin=mysql-bin`
+log_bin=mysql-bin
+default_authentication_plugin = mysql_native_password
+skip_name_resolve = 1`
 
 	mycnfCm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -219,7 +220,7 @@ log_bin=mysql-bin`
 	bootstrapScript := `#!/bin/bash
 	set -e
 	#先判断mysql是否存活
-	POD_INDEX = ${HOSTNAME##*-}
+	POD_INDEX=${HOSTNAME##*-}
 	INIT_MARK_FILE="/var/lib/mysql/.init_done"
 
 	wait_mysql() {
@@ -230,6 +231,7 @@ log_bin=mysql-bin`
 		else
 			sleep 2
 		fi
+	done
 	}
 	
 	main() {
@@ -248,32 +250,32 @@ log_bin=mysql-bin`
 			#执行master初始化任务
 			mysql -uroot -p${MYSQL_ROOT_PASSWORD} -h127.0.0.1 -e "CREATE USER IF NOT EXISTS 'repl'@'%' IDENTIFIED WITH mysql_native_password BY 'repl123';
 			GRANT REPLICATION SLAVE ON *.* TO 'repl'@'%';
+			set global server_id=${POD_INDEX};
 			FLUSH PRIVILEGES;"
 		else
 			#执行slave初始化工作
-			STOP SLAVE;
+			mysql -uroot -p"${MYSQL_ROOT_PASSWORD}" -h127.0.0.1 -e "STOP SLAVE;
 			RESET SLAVE ALL;
-			mysql -uroot -p${MYSQL_ROOT_PASSWORD} -h127.0.0.1 -e "CHANGE MASTER TO MASTER_HOST='${headless-service}', 
+			set global server_id=${POD_INDEX};
+			CHANGE MASTER TO MASTER_HOST='${HEADLESS_SERVICE}', 
 			MASTER_USER='repl', 
 			MASTER_PASSWORD='repl123', 
 			MASTER_AUTO_POSITION=1;
-			START SLAVE"
+			START SLAVE;"
 		fi
 		#创建标记文件
 		touch $INIT_MARK_FILE
 		echo "初始化完成，写入标记文件 ${INIT_MARK_FILE}"
 	}
 	main
+	TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+	API_SERVER="https://kubernetes.default.svc"
 	while true;do
 		if mysqladmin ping -h127.0.0.1 -uroot -p${MYSQL_ROOT_PASSWORD} --silent &> /dev/null;then
 			HEALTHY="true"
 		else
 			HEALTHY="false"
 		fi
-							
-		TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
-		API_SERVER="https://kubernetes.default.svc"
-
 		curl -s -k -X PATCH \
   		-H "Authorization: Bearer $TOKEN" \
   		-H "Content-Type: application/merge-patch+json" \
@@ -289,7 +291,7 @@ log_bin=mysql-bin`
 			Labels:    map[string]string{"MysqlCluster": cluster.Name},
 		},
 		Data: map[string]string{
-			"shell": bootstrapScript,
+			"bootstrap.sh": bootstrapScript,
 		},
 	}
 
@@ -405,25 +407,8 @@ log_bin=mysql-bin`
 								Image: "registry.cn-hangzhou.aliyuncs.com/lpx03/mysql:8.0",
 
 								//启动命令是什么
-								Command: []string{"/bin/sh", "-c"},
-								Args: []string{`while true; do
-							if mysqladmin ping -h127.0.0.1 -uroot -p${MYSQL_ROOT_PASSWORD} --silent &> /dev/null;then
-								HEALTHY="true"
-							else
-								HEALTHY="false"
-							fi
-							
-							TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
-							API_SERVER="https://kubernetes.default.svc"
-
-							curl -s -k -X PATCH \
-  								-H "Authorization: Bearer $TOKEN" \
-  								-H "Content-Type: application/merge-patch+json" \
-  								$API_SERVER/api/v1/namespaces/$POD_NAMESPACE/pods/$HOSTNAME \
-  								--data "{\"metadata\":{\"annotations\":{\"mysql-health\":\"$HEALTHY\"}}}" > /dev/null 2>&1
-							sleep 5
-							done
-							`},
+								Command: []string{"/bin/bash"},
+								Args:    []string{`/opt/bootstrap/bootstrap.sh`},
 								//设置环境变量，以供下面的shell脚本使用
 
 								Env: []corev1.EnvVar{
@@ -440,14 +425,14 @@ log_bin=mysql-bin`
 										Value: mysqlPassword,
 									},
 									{
-										Name:  "HEADLESS-SERVICE",
-										Value: serviceName,
+										Name:  "HEADLESS_SERVICE",
+										Value: statefulsetName + "-0." + serviceName,
 									},
 								},
 								VolumeMounts: []corev1.VolumeMount{
 									{
 										Name:      "bootstrap",
-										MountPath: "/opt/mysql/bootstrap-stripts",
+										MountPath: "/opt/bootstrap",
 									},
 									{
 										Name:      "data",
