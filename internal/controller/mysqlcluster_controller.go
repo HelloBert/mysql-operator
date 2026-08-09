@@ -190,7 +190,10 @@ enforce_gtid_consistency=ON
 binlog_format=ROW
 log_bin=mysql-bin
 default_authentication_plugin = mysql_native_password
-skip_name_resolve = 1`
+skip_name_resolve = 1
+
+!includedir /etc/mysql/conf.d/
+`
 
 	mycnfCm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -250,13 +253,13 @@ skip_name_resolve = 1`
 			#执行master初始化任务
 			mysql -uroot -p${MYSQL_ROOT_PASSWORD} -h127.0.0.1 -e "CREATE USER IF NOT EXISTS 'repl'@'%' IDENTIFIED WITH mysql_native_password BY 'repl123';
 			GRANT REPLICATION SLAVE ON *.* TO 'repl'@'%';
-			set global server_id=${POD_INDEX};
+			set global server_id=$(( POD_INDEX+1 ));
 			FLUSH PRIVILEGES;"
 		else
 			#执行slave初始化工作
 			mysql -uroot -p"${MYSQL_ROOT_PASSWORD}" -h127.0.0.1 -e "STOP SLAVE;
 			RESET SLAVE ALL;
-			set global server_id=${POD_INDEX};
+			set global server_id=$(( POD_INDEX+1 ));
 			CHANGE MASTER TO MASTER_HOST='${HEADLESS_SERVICE}', 
 			MASTER_USER='repl', 
 			MASTER_PASSWORD='repl123', 
@@ -379,6 +382,28 @@ skip_name_resolve = 1`
 						Labels: map[string]string{"MysqlCluster": cluster.Name},
 					},
 					Spec: corev1.PodSpec{
+						//=================containerInit容器==================
+						InitContainers: []corev1.Container{
+							{
+								Name:    "gen-mysql-cnf",
+								Image:   cluster.Spec.Image,
+								Command: []string{"/bin/sh", "-c"},
+								Args: []string{`POD_INDEX=${HOSTNAME##*-}
+SERVER_ID=$((POD_INDEX+1))
+
+cat > /output/server-id.cnf <<EOF
+[mysqld]
+server-id=${SERVER_ID}
+EOF
+echo "server-id已生成: ${SERVER_ID}"`},
+								VolumeMounts: []corev1.VolumeMount{
+									{
+										Name:      "cnf-override",
+										MountPath: "/output",
+									},
+								},
+							},
+						},
 						Containers: []corev1.Container{
 							//===============mysql容器==================
 							{
@@ -388,6 +413,7 @@ skip_name_resolve = 1`
 								Ports: []corev1.ContainerPort{{
 									ContainerPort: cluster.Spec.Port,
 								}},
+
 								Env: envVars,
 								VolumeMounts: []corev1.VolumeMount{
 									{
@@ -396,6 +422,11 @@ skip_name_resolve = 1`
 									},
 									{
 										Name:      "mycnf",
+										MountPath: "/etc/mysql/my.cnf",
+										SubPath:   "my.cnf",
+									},
+									{
+										Name:      "cnf-override",
 										MountPath: "/etc/mysql/conf.d",
 									},
 								},
@@ -456,6 +487,12 @@ skip_name_resolve = 1`
 									ConfigMap: &corev1.ConfigMapVolumeSource{
 										LocalObjectReference: corev1.LocalObjectReference{Name: bootstrapCmName},
 									},
+								},
+							},
+							{
+								Name: "cnf-override",
+								VolumeSource: corev1.VolumeSource{
+									EmptyDir: &corev1.EmptyDirVolumeSource{},
 								},
 							},
 						},
