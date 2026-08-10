@@ -54,8 +54,18 @@ func NewBootstrapConfigMap(cluster *myappv1.MySQLCluster) *corev1.ConfigMap {
 	done
 	}
 	
+	wait_master_env(){
+		echo "等待my_master_pod环境变量"
+		while [ -z "${MY_MASTER_POD}" ];do
+			sleep 2
+		done
+		echo "获取到MY_MASTER_POD,${MY_MASTER_POD}"
+	}
+
 	main() {
 		wait_mysql
+		wait_master_env
+
 		#判断标记文件是否存在，如果存在说明之前已经惊醒过初始化操作了，直接返回
 		if [ -f $INIT_MARK_FILE ];then
 			echo "该节点已经完成过初始化操作，无需创建标记文件"
@@ -65,8 +75,8 @@ func NewBootstrapConfigMap(cluster *myappv1.MySQLCluster) *corev1.ConfigMap {
 		echo "开始执行初始化逻辑，pod index:${POD_INDEX}"
 
 		#判断是否是0节点，如果是0节点，就执行master初始化工作，如果时slave节点就执行slave初始化工作
-		if [ $POD_INDEX -eq 0 ];then
-			echo "当前是pod‑0，作为master，创建repl复制用户"
+		if [ "${HOSTNAME}" = "${MY_MASTER_POD}" ];then
+			echo "当前是节点是集群主节点，作为master，创建repl复制用户"
 			#执行master初始化任务
 			mysql -uroot -p${MYSQL_ROOT_PASSWORD} -h127.0.0.1 -e "CREATE USER IF NOT EXISTS 'repl'@'%' IDENTIFIED WITH mysql_native_password BY 'repl123';
 			GRANT REPLICATION SLAVE ON *.* TO 'repl'@'%';
@@ -74,10 +84,11 @@ func NewBootstrapConfigMap(cluster *myappv1.MySQLCluster) *corev1.ConfigMap {
 			FLUSH PRIVILEGES;"
 		else
 			#执行slave初始化工作
+			echo "当前节点是从节点，指向主节点${MY_MASTER_POD}.${SERVICE_NAME}"
 			mysql -uroot -p"${MYSQL_ROOT_PASSWORD}" -h127.0.0.1 -e "STOP SLAVE;
 			RESET SLAVE ALL;
 			set global server_id=$(( POD_INDEX+1 ));
-			CHANGE MASTER TO MASTER_HOST='${HEADLESS_SERVICE}', 
+			CHANGE MASTER TO MASTER_HOST='${MY_MASTER_POD}.${SERVICE_NAME}', 
 			MASTER_USER='repl', 
 			MASTER_PASSWORD='repl123', 
 			MASTER_AUTO_POSITION=1;

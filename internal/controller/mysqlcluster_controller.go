@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -142,10 +143,6 @@ func (r *MySQLClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	logger.Info("权限配置已就绪", "namespace", ns)
 
-	// ===================== 核心：statefulset 名称与命名空间 =====================
-	statefulsetName := cluster.Name + "-statefulset"
-	statefulsetKey := client.ObjectKey{Namespace: cluster.Namespace, Name: statefulsetName}
-
 	//======================创建configmap=====================
 	mycnfCm := mysqlcluster.NewMyCnfConfigMap(&cluster)
 
@@ -191,9 +188,31 @@ func (r *MySQLClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
+	//==================查询集群所有的pod，标签过滤=================
+	podList := &corev1.PodList{}
+	listOpt := []client.ListOption{
+		client.InNamespace(cluster.Namespace),
+		client.MatchingLabels(map[string]string{"MysqlCluster": cluster.Name}),
+	}
+	if err := r.List(ctx, podList, listOpt...); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	var selectedMasterPod string
+	if len(podList.Items) > 0 {
+		selectedMasterPod = podList.Items[0].Name
+	}
+	// 如果选出的master和status保存的不一样，更新CR status
+	if cluster.Status.MasterPod != selectedMasterPod {
+		cluster.Status.MasterPod = selectedMasterPod
+		if err := r.Status().Update(ctx, &cluster); err != nil {
+			return ctrl.Result{}, err
+		}
+		//statue更新触发时间，直接返回，让下一轮Reconcile执行sts更新
+		return ctrl.Result{Requeue: true}, nil
+	}
+
 	// 2. 检查 Statefulset 是否存在
-	var existingSts appsv1.StatefulSet
-	err := r.Get(ctx, statefulsetKey, &existingSts)
 
 	// 处理环境变量
 	envVars := make([]corev1.EnvVar, 0, len(cluster.Spec.Env))
@@ -211,31 +230,56 @@ func (r *MySQLClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		}
 	}
 
-	// ===================== 3. Statefulset 不存在 → 创建 =====================
-	if err != nil && errors.IsNotFound(err) {
-		logger.Info("Statefulset 不存在，开始创建", "name", statefulsetName)
-		//调用statefulset.go
-		sts := mysqlcluster.NewMysqlStatefulSet(statefulsetName, serviceName, &cluster, cluster.Spec.Replicas, envVars, mysqlPassword)
+	// ===================== 核心：statefulset 名称与命名空间 =====================
+	// saName := cluster.Name + "-sa"
+	statefulsetName := cluster.Name + "-statefulset"
+	// statefulsetKey := client.ObjectKey{Namespace: cluster.Namespace, Name: statefulsetName}
 
-		// 设置 OwnerReference（级联删除）
-		if err := controllerutil.SetControllerReference(&cluster, sts, r.Scheme); err != nil {
-			logger.Error(err, "设置 OwnerReference 失败")
-			return ctrl.Result{}, err
-		}
-
-		// 创建 Statefulset
-		if err := r.Create(ctx, sts); err != nil {
-			logger.Error(err, "创建 Statefulset 失败")
-			return ctrl.Result{}, err
-		}
-
-		logger.Info("Statefulset 创建成功", "name", statefulsetName)
-		// 创建后重新入队，立即同步状态
-		return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
+	stsKey := types.NamespacedName{
+		Name:      statefulsetName,
+		Namespace: cluster.Namespace,
 	}
-	// ===================== 4. 获取 statefulset 失败（非 404） =====================
+	var existingSts appsv1.StatefulSet
+
+	err := r.Get(ctx, stsKey, &existingSts)
 	if err != nil {
-		logger.Error(err, "获取 Statefulset 失败")
+		if !errors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
+		// sts不存在，执行创建
+		sts := mysqlcluster.NewMysqlStatefulSet(
+			statefulsetName,
+			serviceName,
+			// saName,
+			&cluster,
+			cluster.Spec.Replicas,
+			envVars,
+			mysqlPassword,
+			cluster.Status.MasterPod,
+		)
+		if err := controllerutil.SetControllerReference(&cluster, sts, r.Scheme); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.Create(ctx, sts); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
+
+	// sts已经存在，执行update
+	desiredSts := mysqlcluster.NewMysqlStatefulSet(
+		statefulsetName,
+		serviceName,
+		// saName,
+		&cluster,
+		cluster.Spec.Replicas,
+		envVars,
+		mysqlPassword,
+		cluster.Status.MasterPod,
+	)
+	// ⭐重点：只替换spec，保留metadata（resourceVersion不能丢！）
+	existingSts.Spec = desiredSts.Spec
+	if err := r.Update(ctx, &existingSts); err != nil {
 		return ctrl.Result{}, err
 	}
 

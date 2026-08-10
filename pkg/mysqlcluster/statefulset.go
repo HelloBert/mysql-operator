@@ -16,6 +16,7 @@ func NewMysqlStatefulSet(
 	replicas int32,
 	envVars []corev1.EnvVar,
 	mysqlPassword string,
+	masterPod string,
 ) *appsv1.StatefulSet {
 
 	sts := &appsv1.StatefulSet{
@@ -111,6 +112,14 @@ echo "server-id已生成: ${SERVER_ID}"`},
 								{
 									Name:  "HEADLESS_SERVICE",
 									Value: statefulsetName + "-0." + serviceName,
+								},
+								{
+									Name:  "MY_MASTER_POD",
+									Value: masterPod,
+								},
+								{
+									Name:  "SERVICE_NAME",
+									Value: serviceName, //mysql-service
 								},
 							},
 							VolumeMounts: []corev1.VolumeMount{

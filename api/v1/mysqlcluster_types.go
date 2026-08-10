@@ -6,6 +6,11 @@ import (
 )
 
 // MySQLClusterSpec defines the desired state of MySQLCluster
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:JSONPath=".status.readyReplicas",name=Ready,type=integer
+// +kubebuilder:printcolumn:JSONPath=".status.masterPod",name=MasterPod,type=string
+// +kubebuilder:printcolumn:JSONPath=".status.ready",name=ClusterReady,type=boolean
 type MySQLClusterSpec struct {
 	// 副本数（1 主 + N 从）
 	// +kubebuilder:default=3
