@@ -19,6 +19,9 @@ package controller
 import (
 	"context"
 	"mysql-operator/pkg/mysqlcluster"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -198,6 +201,18 @@ func (r *MySQLClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
+	//pod排序：按后缀数字升序，0优先
+	sort.Slice(podList.Items, func(i, j int) bool {
+		nameA := podList.Items[i].Name
+		nameB := podList.Items[j].Name
+
+		idxStrA := nameA[strings.LastIndex(nameA, "-")+1:]
+		idxStrB := nameB[strings.LastIndex(nameB, "-")+1:]
+
+		ia, _ := strconv.Atoi(idxStrA)
+		ib, _ := strconv.Atoi(idxStrB)
+		return ia < ib
+	})
 	var selectedMasterPod string
 	if len(podList.Items) > 0 {
 		selectedMasterPod = podList.Items[0].Name
